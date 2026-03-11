@@ -1,0 +1,37 @@
+[project]
+name = "sequencedetection"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Katharina Bracher",email = "katharina.bracher@mailbox.org"}
+]
+readme = "README.md"
+package-mode = false 
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib (>=3.10.5,<4.0.0)",
+    "numpy (>=2.3.2,<3.0.0)",
+    "scipy (>=1.16.1,<2.0.0)",
+    "seaborn (>=0.13.2,<0.14.0)",
+    "scikit-learn (>=1.7.1,<2.0.0)",
+    "pandas (>=2.3.1,<3.0.0)",
+    "networkx (>=3.5,<4.0)",
+    "jupyterlab (>=4.4.5,<5.0.0)",
+    "neo (>=0.14.2,<0.15.0)",
+    "hdbscan (>=0.8.40,<0.9.0)",
+    "ipympl (>=0.9.8,<0.10.0)",
+    "ipywidgets (>=8.1.8,<9.0.0)",
+    "h5py (>=3.15.1,<4.0.0)",
+    "numba (>=0.62.1,<0.63.0)",
+    "plotly (>=6.5.0,<7.0.0)",
+    "igraph (>=1.0.0,<2.0.0)",
+    "leidenalg (>=0.11.0,<0.12.0)",
+    "pytest (>=9.0.2,<10.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
