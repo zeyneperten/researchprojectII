@@ -277,7 +277,7 @@ def generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=None, shuf
     spike_times_all = {}
     
     for k in range(n_motifs):
-        seqs = []
+        seqs = [] 
         seqs_spiketimes = []
         for _ in range(n_sequences):
         
@@ -290,7 +290,10 @@ def generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=None, shuf
                     idx = np.searchsorted(cdfs[i, k], u)
                     st = t[idx]
                     spike_times[i] = st
-                    spike_times_list[i] = np.array([st])
+                    spike_times_list[i] = np.array([
+                        
+                        
+                        st])
     
             # get order of neurons
             fired = np.where(np.isfinite(spike_times))[0]
