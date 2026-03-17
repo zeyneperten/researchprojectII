@@ -34,7 +34,7 @@ def rankseq(s1,s2):
  
         
     #compute cell overlap (neurons contained in both)
-    minseq=s[np.where(np.sum(d,axis=1)>0)[0]];
+    minseq=s[np.where(np.sum(d,axis=1)>0)[0]]
     lm=len(minseq)
   
     # delete neurons from the shorter sequence that are not in the minimal
@@ -51,11 +51,11 @@ def rankseq(s1,s2):
     dd=np.ones((lm,1))*s0 - (np.ones((l0,1))*minseq).transpose()
   
     #compute spearmans r
-    if len(dd)>1:
+    if len(dd)>4:
         ids=np.argmin(np.abs(dd),axis=0)
         
         rc = np.corrcoef(np.arange(len(ids)),ids)[0,1]
-        ln=len(ids)
+        ln=len(ids) 
     else:
         rc=np.nan;
         ln=np.nan
@@ -110,7 +110,7 @@ def allmot(seqs,nrm):
 
             zmat[ns,ms]=ztmp
             zmat[ms,ns]=ztmp
-            bmat[ns,ms]=1.*(ztmp>mns[3])
+            bmat[ns,ms]=1.*(ztmp>mns[3]) 
             bmat[ms,ns]=1.*(ztmp>mns[3])
 
         nsig[ns] = np.nansum(bmat[ns,:])
