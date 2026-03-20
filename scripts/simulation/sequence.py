@@ -17,7 +17,7 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
                      corr_sigma=False, rho_sig=0.0,
                      corr_volume=False, rho_vol=0.0,
                      shuffle_order=False, 
-                     random_state=0, plot=False, savepath=None):
+                     random_state=0, plot=False, savepath=None, batch_size=None):
     """
     Simulate sequences of neuronal activity with given parameters.
     Input: 
@@ -40,6 +40,8 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
                     individual neurons have similar activity level across clusters
         plot: If True, plot the PDFs and CDFs of the neurons in each cluster.
         savepath: If provided, save the simulation data to this path.
+        batch_size: If provided, process neurons in batches to reduce memory usage.
+                    Recommended: 1000-5000 for large n_neurons.
     """
     root_rng = np.random.default_rng(random_state)
     rng_params, rng_samples = root_rng.spawn(2)
@@ -50,10 +52,20 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
         corr_mu, rho_mu, corr_sigma, rho_sig, corr_volume, rho_vol, sigma_range, vol_param)
     
     # Calculate the PDFs and CDFs for each neuron in each cluster
-    densities, cdfs, t = build_pdfs_and_cdfs(n_neurons, n_motifs, n_bins,
-                     mu, sigma, volume, plot)
+    if batch_size is not None and n_neurons > batch_size:
+        densities, cdfs, t = build_pdfs_and_cdfs_batched(n_neurons, n_motifs, n_bins,
+                         mu, sigma, volume, batch_size, plot)
+    else:
+        densities, cdfs, t = build_pdfs_and_cdfs_vectorized(n_neurons, n_motifs, n_bins,
+                         mu, sigma, volume, plot)
     # Sample spike times and generate sequences
-    sequences, spike_times = generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=rng_samples, shuffle_order=shuffle_order)
+    if batch_size is not None and n_neurons > batch_size:
+        sequences, spike_times = generate_sequences_batched(n_neurons, n_motifs, n_sequences, 
+                                                             mu, sigma, volume, t, batch_size, rng=rng_samples, shuffle_order=shuffle_order)
+    else:
+        # Build full CDFs first if small enough
+        densities, cdfs, t = build_pdfs_and_cdfs(n_neurons, n_motifs, n_bins, mu, sigma, volume, plot=False)
+        sequences, spike_times = generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=rng_samples, shuffle_order=shuffle_order)
 
     # Restructure the sequences into a flat list of sequences and their labels
     seqs, seqs_labels, spk_times = restructure(sequences, spike_times)
@@ -116,19 +128,50 @@ def save_simulation(seqs, seqs_labels, spk_times, sequences, spike_times, true_t
     print("saved", savepath)
 
 
-def downsample_sequences(sequences, spike_times, n_neurons_keep):
+def downsample_sequences(sequences, spike_times, volume, n_neurons_keep, min_length=0):
     """
     Downsample sequences to a fixed number of neurons.
+    
+    Parameters:
+    -----------
+    sequences : dict
+        Dictionary mapping cluster ID to list of sequences
+    spike_times : list
+        Flat list of spike times arrays
+    volume : ndarray
+        Shape (n_neurons, n_motifs) array
+    n_neurons_keep : int
+        Number of neurons to keep (keep neurons 0 to n_neurons_keep)
+    min_length : int, optional
+        Minimum length for a sequence to be kept. Sequences shorter than this are filtered out.
+        Default is 0 (no filtering).
+    
+    Returns:
+    --------
+    seqs_downsampled : dict
+        Downsampled sequences (filtered by min_length)
+    spk_times_downsampled : list
+        Downsampled spike times
+    volume_downsampled : ndarray
+        Downsampled volume
     """
+    # Downsample sequences (dict of lists -> keep only neurons <= n_neurons_keep)
+    # Also filter sequences by minimum length
     seqs_downsampled = {
-    k: [s for s in ([x for x in seq if x <= n_neurons_keep] for seq in seqs) if s]
-    for k, seqs in sequences.items()
+        k: [s for s in ([x for x in seq if x <= n_neurons_keep] for seq in seqs) 
+            if s and len(s) >= min_length]
+        for k, seqs in sequences.items()
     }
-    spk_times_downsampled = {
-        k: [spk[:n_neurons_keep+1] for spk in seqs]
-        for k, seqs in spike_times.items()
-    }
-    return seqs_downsampled, spk_times_downsampled
+    
+    # Downsample spike times (list -> slice each array)
+    spk_times_downsampled = [spk[:n_neurons_keep+1] for spk in spike_times]
+    
+    # Downsample volume (ndarray -> slice rows)
+    volume_downsampled = volume[:n_neurons_keep, :]
+    
+    return seqs_downsampled, spk_times_downsampled, volume_downsampled
+
+
 
 
 def restructure(sequences, spike_times, min_len=5):
@@ -257,6 +300,62 @@ def build_pdfs_and_cdfs(n_neurons, n_motifs, n_bins,
                 axes[c,1].set_ylim(0,1)
     return densities, cdfs, t
 
+def build_pdfs_and_cdfs_vectorized(n_neurons, n_motifs, n_bins, mu, sigma, volume, plot):
+    t = np.linspace(0, 1, n_bins)
+    
+    # Vectorize: shape (n_neurons, n_motifs, n_bins)
+    mu_exp = mu[:, :, np.newaxis]      # (n_neurons, n_motifs, 1)
+    sigma_exp = sigma[:, :, np.newaxis]  # (n_neurons, n_motifs, 1)
+    t_grid = t[np.newaxis, np.newaxis, :]  # (1, 1, n_bins)
+    
+    g = np.exp(-0.5 * ((t_grid - mu_exp) / sigma_exp)**2)
+    g /= g.sum(axis=2, keepdims=True)  # Normalize
+    
+    volume_exp = volume[:, :, np.newaxis]
+    densities = g * volume_exp
+    cdfs = np.cumsum(densities, axis=2)
+    
+    return densities, cdfs, t
+
+
+def build_pdfs_and_cdfs_batched(n_neurons, n_motifs, n_bins, mu, sigma, volume, batch_size, plot):
+    """
+    Build PDFs and CDFs for each neuron in batches to reduce memory usage.
+    """
+    t = np.linspace(0, 1, n_bins)
+    densities = np.zeros((n_neurons, n_motifs, n_bins))
+    cdfs = np.zeros_like(densities)
+    
+    # Process neurons in batches
+    for batch_start in range(0, n_neurons, batch_size):
+        batch_end = min(batch_start + batch_size, n_neurons)
+        batch_size_actual = batch_end - batch_start
+        
+        # Extract batch
+        mu_batch = mu[batch_start:batch_end, :]      # (batch_size, n_motifs)
+        sigma_batch = sigma[batch_start:batch_end, :] # (batch_size, n_motifs)
+        volume_batch = volume[batch_start:batch_end, :] # (batch_size, n_motifs)
+        
+        # Vectorize for this batch
+        mu_exp = mu_batch[:, :, np.newaxis]
+        sigma_exp = sigma_batch[:, :, np.newaxis]
+        t_grid = t[np.newaxis, np.newaxis, :]
+        
+        g = np.exp(-0.5 * ((t_grid - mu_exp) / sigma_exp)**2)
+        g /= g.sum(axis=2, keepdims=True)
+        
+        volume_exp = volume_batch[:, :, np.newaxis]
+        densities_batch = g * volume_exp
+        cdfs_batch = np.cumsum(densities_batch, axis=2)
+        
+        # Store results
+        densities[batch_start:batch_end, :, :] = densities_batch
+        cdfs[batch_start:batch_end, :, :] = cdfs_batch
+        
+        print(f"Processed batch: neurons {batch_start}-{batch_end}/{n_neurons}")
+    
+    return densities, cdfs, t
+
 
 # GENERATE SEQUENCES
 def generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=None, shuffle_order=False):
@@ -307,6 +406,70 @@ def generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=None, shuf
     
         sequences[k] = seqs
         spike_times_all[k] = seqs_spiketimes
+    return sequences, spike_times_all
+
+
+def generate_sequences_batched(n_neurons, n_motifs, n_sequences, mu, sigma, volume, t, batch_size, rng=None, shuffle_order=False):
+    """
+    Generate sequences by processing neurons in batches to minimize memory usage.
+    Only keeps one batch's CDFs in memory at a time.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    sequences = {}
+    spike_times_all = {}
+    n_bins = len(t)
+    
+    for k in range(n_motifs):
+        seqs = []
+        seqs_spiketimes = []
+        for seq_idx in range(n_sequences):
+            spike_times_full = np.full(n_neurons, np.inf)
+            spike_times_list_full = [np.array([], dtype=float) for _ in range(n_neurons)]
+            
+            # Process neurons in batches
+            for batch_start in range(0, n_neurons, batch_size):
+                batch_end = min(batch_start + batch_size, n_neurons)
+                
+                # Extract batch and compute CDFs
+                mu_batch = mu[batch_start:batch_end, k]
+                sigma_batch = sigma[batch_start:batch_end, k]
+                volume_batch = volume[batch_start:batch_end, k]
+                
+                # Compute Gaussian PDF for batch (vectorized)
+                t_expanded = t[np.newaxis, :]
+                mu_expanded = mu_batch[:, np.newaxis]
+                sigma_expanded = sigma_batch[:, np.newaxis]
+                
+                g = np.exp(-0.5 * ((t_expanded - mu_expanded) / sigma_expanded)**2)
+                g /= g.sum(axis=1, keepdims=True)
+                
+                pdf = g * volume_batch[:, np.newaxis]
+                cdf_batch = np.cumsum(pdf, axis=1)
+                
+                # Generate spike times for this batch
+                for batch_idx in range(batch_end - batch_start):
+                    neuron_idx = batch_start + batch_idx
+                    u = rng.random()
+                    if u <= cdf_batch[batch_idx, -1]:
+                        idx = np.searchsorted(cdf_batch[batch_idx], u)
+                        st = t[min(idx, n_bins - 1)]
+                        spike_times_full[neuron_idx] = st
+                        spike_times_list_full[neuron_idx] = np.array([st])
+            
+            # Get order of neurons
+            fired = np.where(np.isfinite(spike_times_full))[0]
+            order = list(fired[np.argsort(spike_times_full[fired])])
+            if shuffle_order and len(order) > 1:
+                rng.shuffle(order)
+            
+            seq = [int(s) for s in order]
+            seqs.append(seq)
+            seqs_spiketimes.append(spike_times_list_full)
+        
+        sequences[k] = seqs
+        spike_times_all[k] = seqs_spiketimes
+        print(f"Generated sequences for motif {k}/{n_motifs}")
+    
     return sequences, spike_times_all
 
 

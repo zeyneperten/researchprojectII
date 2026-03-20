@@ -6,8 +6,10 @@ def rankseq(s1,s2):
     #compute rank order correlation between sequences
 
     # set things straight
-    s1=np.array(s1).flatten()
-    s2=np.array(s2).flatten()
+    #s1=np.array(s1).flatten()
+    #s2=np.array(s2).flatten()
+    s1=np.asarray(s1, dtype=float).flatten()
+    s2=np.asarray(s2, dtype=float).flatten()
     l1=len(s1)
     l2=len(s2)
     
