@@ -14,7 +14,7 @@ __version__ = "0.1.0"
 from . import analysis
 from . import clustering
 from . import config
-from . import data
+# from . import data # commented out because of looping error during import
 from . import data_utils
 from . import simulation
 from . import visualization
