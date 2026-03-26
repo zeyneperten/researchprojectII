@@ -1,6 +1,7 @@
 # Standard library imports
 import itertools
 import pickle
+from functools import partial
 
 # Third-party imports
 import matplotlib.pyplot as plt
@@ -99,7 +100,8 @@ def save_simulation(seqs, seqs_labels, spk_times, sequences, spike_times, true_t
     simulation["seqs"] = seqs
     simulation["seqs_labels"] = seqs_labels
     simulation["spike_times"] = spk_times
-    simulation["seqs_unfiltered"] = sequences
+    simulation["sequences"] = sequences
+    simulation["spike_times"] = spike_times
     simulation["true_templates"] = true_templates
     simulation["mu"] = mu
     simulation["sigma"] = sigma
@@ -170,7 +172,6 @@ def downsample_sequences(sequences, spike_times, volume, n_neurons_keep, min_len
     volume_downsampled = volume[:n_neurons_keep, :]
     
     return seqs_downsampled, spk_times_downsampled, volume_downsampled
-
 
 
 
@@ -471,6 +472,9 @@ def generate_sequences_batched(n_neurons, n_motifs, n_sequences, mu, sigma, volu
         print(f"Generated sequences for motif {k}/{n_motifs}")
     
     return sequences, spike_times_all
+
+
+
 
 
 # =============================================================================
