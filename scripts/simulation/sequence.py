@@ -130,9 +130,9 @@ def save_simulation(seqs, seqs_labels, spk_times, sequences, spike_times, true_t
     print("saved", savepath)
 
 
-def downsample_sequences(sequences, spike_times, volume, n_neurons_keep, min_length=0):
+def downsample_sequences(sequences, spike_times, volume, n_neurons, n_neurons_keep, min_length=0, random_state=None):
     """
-    Downsample sequences to a fixed number of neurons.
+    Downsample sequences to a fixed number of neurons by randomly selecting neuron indices.
     
     Parameters:
     -----------
@@ -143,10 +143,13 @@ def downsample_sequences(sequences, spike_times, volume, n_neurons_keep, min_len
     volume : ndarray
         Shape (n_neurons, n_motifs) array
     n_neurons_keep : int
-        Number of neurons to keep (keep neurons 0 to n_neurons_keep)
+        Number of neurons to keep (randomly selected)
     min_length : int, optional
         Minimum length for a sequence to be kept. Sequences shorter than this are filtered out.
         Default is 0 (no filtering).
+    random_state : int, np.random.RandomState, or None, optional
+        Random seed for reproducibility. If int, creates a new RandomState with that seed.
+        If None, uses unseeded random state (different results each time). Default is None.
     
     Returns:
     --------
@@ -157,19 +160,40 @@ def downsample_sequences(sequences, spike_times, volume, n_neurons_keep, min_len
     volume_downsampled : ndarray
         Downsampled volume
     """
-    # Downsample sequences (dict of lists -> keep only neurons <= n_neurons_keep)
-    # Also filter sequences by minimum length
+    # Create random number generator
+    if isinstance(random_state, int):
+        rng = np.random.RandomState(random_state)
+    elif isinstance(random_state, np.random.RandomState):
+        rng = random_state
+    else:
+        rng = np.random.RandomState()  # Unseeded, new random state each call
+    
+    # Randomly select n_neurons_keep indices from all neurons
+    neurons_to_keep = rng.choice(n_neurons, size=n_neurons_keep, replace=False)
+    neurons_to_keep_sorted = np.sort(neurons_to_keep)  # Sort for proper indexing
+    neurons_to_keep_set = set(neurons_to_keep)
+
     seqs_downsampled = {
-        k: [s for s in ([x for x in seq if x <= n_neurons_keep] for seq in seqs) 
+        k: [s for s in ([x for x in seq if x in neurons_to_keep_set] for seq in seqs) 
             if s and len(s) >= min_length]
         for k, seqs in sequences.items()
     }
+
+    # Downsample spike times and volume using selected indices
+    # Build spike times list by indexing each element separately (handles ragged arrays)
     
+    volume_downsampled = volume[neurons_to_keep_sorted, :]
+
+    spk_times_downsampled = [
+        [spk[i] for i in neurons_to_keep_sorted]
+        for spk in spike_times
+        ]
+
     # Downsample spike times (list -> slice each array)
-    spk_times_downsampled = [spk[:n_neurons_keep+1] for spk in spike_times]
+    #spk_times_downsampled = [spk[:n_neurons_keep+1] for spk in spike_times]
     
     # Downsample volume (ndarray -> slice rows)
-    volume_downsampled = volume[:n_neurons_keep, :]
+    #volume_downsampled = volume[:n_neurons_keep, :]
     
     return seqs_downsampled, spk_times_downsampled, volume_downsampled
 
