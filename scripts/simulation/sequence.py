@@ -182,9 +182,9 @@ def downsample_sequences(sequences, spike_times, volume, n_neurons, n_neurons_ke
     # Downsample spike times and volume using selected indices
     # Build spike times list by indexing each element separately (handles ragged arrays)
     
-    volume_downsampled = volume[neurons_to_keep_sorted, :]
+    volume_downsampled = None if volume is None or volume.size == 0 else volume[neurons_to_keep_sorted, :]
 
-    spk_times_downsampled = [
+    spk_times_downsampled = None if spike_times is None or len(spike_times) == 0 else [
         [spk[i] for i in neurons_to_keep_sorted]
         for spk in spike_times
         ]
