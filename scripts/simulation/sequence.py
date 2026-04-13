@@ -64,8 +64,6 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
         sequences, spike_times = generate_sequences_batched(n_neurons, n_motifs, n_sequences, 
                                                              mu, sigma, volume, t, batch_size, rng=rng_samples, shuffle_order=shuffle_order)
     else:
-        # Build full CDFs first if small enough
-        densities, cdfs, t = build_pdfs_and_cdfs(n_neurons, n_motifs, n_bins, mu, sigma, volume, plot=False)
         sequences, spike_times = generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=rng_samples, shuffle_order=shuffle_order)
 
     # Restructure the sequences into a flat list of sequences and their labels
@@ -323,6 +321,8 @@ def build_pdfs_and_cdfs(n_neurons, n_motifs, n_bins,
                 axes[c,0].plot(t, densities[i,c], alpha=0.3)
                 axes[c,1].plot(t, cdfs[i,c], alpha=0.3)
                 axes[c,1].set_ylim(0,1)
+        plt.tight_layout()
+        plt.show()
     return densities, cdfs, t
 
 def build_pdfs_and_cdfs_vectorized(n_neurons, n_motifs, n_bins, mu, sigma, volume, plot):
@@ -339,6 +339,17 @@ def build_pdfs_and_cdfs_vectorized(n_neurons, n_motifs, n_bins, mu, sigma, volum
     volume_exp = volume[:, :, np.newaxis]
     densities = g * volume_exp
     cdfs = np.cumsum(densities, axis=2)
+    
+    # plot PDFs and CDFs
+    if plot:
+        fig, axes = plt.subplots(n_motifs, 2, figsize=(10, 2 * n_motifs), sharex=True)
+        for c in range(n_motifs):
+            for i in range(n_neurons):
+                axes[c,0].plot(t, densities[i,c], alpha=0.3)
+                axes[c,1].plot(t, cdfs[i,c], alpha=0.3)
+                axes[c,1].set_ylim(0,1)
+        plt.tight_layout()
+        plt.show()
     
     return densities, cdfs, t
 
@@ -378,6 +389,19 @@ def build_pdfs_and_cdfs_batched(n_neurons, n_motifs, n_bins, mu, sigma, volume, 
         cdfs[batch_start:batch_end, :, :] = cdfs_batch
         
         print(f"Processed batch: neurons {batch_start}-{batch_end}/{n_neurons}")
+    
+    # plot PDFs and CDFs (sample from first batch for visualization)
+    if plot:
+        sample_neurons = min(n_neurons, 100)  # Sample first 100 neurons for clarity
+        fig, axes = plt.subplots(n_motifs, 2, figsize=(10, 2 * n_motifs), sharex=True)
+        for c in range(n_motifs):
+            for i in range(sample_neurons):
+                axes[c,0].plot(t, densities[i,c], alpha=0.3)
+                axes[c,1].plot(t, cdfs[i,c], alpha=0.3)
+                axes[c,1].set_ylim(0,1)
+        fig.suptitle(f'PDFs and CDFs (showing first {sample_neurons} neurons per motif)')
+        plt.tight_layout()
+        plt.show()
     
     return densities, cdfs, t
 
