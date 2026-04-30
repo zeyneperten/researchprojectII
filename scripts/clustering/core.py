@@ -42,7 +42,7 @@ def allmot(seqs, n_jobs=-1, block=256):
 
     for i0, i1, j0, j1, cblk, zblk, bblk, bblk2 in results:
         if i0 == j0:
-            # diagonal block: write block, then reflect only strict upper ---
+            # diagonal block: write block, then reflect only strict upper
             corr[i0:i1, i0:i1] = cblk
             zmat[i0:i1, i0:i1] = zblk
             bmat[i0:i1, i0:i1] = bblk
@@ -56,7 +56,7 @@ def allmot(seqs, n_jobs=-1, block=256):
             bmat[i0 + iu[1], i0 + iu[0]] = bblk[iu]
             bmat2[i0 + iu[1], i0 + iu[0]] = bblk2[iu]
         else:
-            # off-diagonal block: full rectangle + symmetric mirror ---
+            # off-diagonal block: full rectangle + symmetric mirror
             corr[i0:i1, j0:j1] = cblk
             zmat[i0:i1, j0:j1] = zblk
             bmat[i0:i1, j0:j1] = bblk
@@ -248,7 +248,7 @@ def add_within_across_score(retval, bursts, seqs, permutation=True):
 
 def add_within_clust_score(retval, mat_dict):
     """
-    Evaluate clusters by computing mean within-cluster score.
+    Evaluate clusters by computing mean within-cluster score (Intra-cluster score).
 
     For each cluster, this function extracts the submatrix of the z-score 
     matrix corresponding to all members of that cluster and computes the mean 
@@ -275,7 +275,7 @@ def add_within_clust_score(retval, mat_dict):
     zmat_0 = mat_dict['zmat'].copy()
     zmat_0 = np.nan_to_num(zmat_0, nan=0)
     # 0 where bmat_pm is 0, i.e. scores are not significant
-    zmat_0[mat_dict['bmat'] == 0] = 0 #bmat_pm
+    zmat_0[mat_dict['bmat'] == 0] = 0 #bmat - only postive evaluated bmat_pm - all significant scores, including negative ones
     
     for cl in np.unique(ids_clust):
         # indices of sequences belonging to this cluster
@@ -297,8 +297,90 @@ def add_within_clust_score(retval, mat_dict):
         within_score.append(mean_val)
         within_var.append(variance_val)
 
+    # Ratio 
+    block_means = eval_helpers.get_mean_cluster_score(mat_dict,retval)
+    diag = np.diag(block_means).astype(float)
+    off_mean = (block_means.sum(axis=1) - diag) / (block_means.shape[1] - 1)
+    ratio = diag / off_mean
+    ratio = np.clip(ratio, None, 100) # cap at 100 to avoid extreme values from small denominators
+    eps = 1e-10
+    sep = (diag - off_mean) / (np.nanstd(block_means, axis=1) + eps)
+
     retval['clust_scores']['within_clust'] = np.array(within_score)
     retval['clust_scores']['within_clust_var'] = np.array(within_var)
+    retval['clust_scores']['within_clust_ratio'] = np.array(ratio)
+    retval['clust_scores']['within_clust_separation'] = np.array(sep)
+
+
+def add_within_clust_membership_score(
+    retval,
+    seqs,
+    metric="jaccard",
+):
+    """
+    Add a membership-overlap (co-activity) within-cluster score Smem, analogous to add_within_clust_score().
+
+    For each cluster label `cl`, we compute pairwise set-overlap between sequences in that cluster,
+    and take the mean (and variance) over all pairs (upper triangle, excluding diagonal).
+
+    Parameters
+    ----------
+    retval : dict
+        Result dict produced by info_cluster() containing at least 'ids_clust' and 'clust_scores'.
+    seqs : list / array-like
+        List of sequences; each element is a 1D array-like of neuron IDs (order ignored here).
+    metric : {"jaccard", "overlap_min"}
+        Membership similarity metric:
+          - "jaccard": |A∩B| / |A∪B|
+          - "overlap_min": |A∩B| / min(|A|,|B|)
+    Notes
+    -----
+    - This score is purely membership-based (co-activity), ignores order.
+    - Singletons get NaN (undefined).
+    - Complexity per cluster is O(m^2) for cluster size m; fine for typical cluster sizes.
+    """
+    if "clust_scores" not in retval:
+        retval["clust_scores"] = {}
+
+    ids_clust = np.asarray(retval["ids_clust"])
+    unique_labels = np.unique(ids_clust)
+
+    # Precompute membership sets for all sequences once
+    seq_sets = [set(map(int, np.unique(np.asarray(s, dtype=int)))) for s in seqs]
+
+    within_mean = []
+    within_var = []
+
+    for cl in unique_labels:
+        idx = np.where(ids_clust == cl)[0]
+        if idx.size < 2:
+            within_mean.append(np.nan)
+            within_var.append(np.nan)
+            continue
+
+        # compute pairwise overlaps (upper triangle)
+        vals = []
+        for a_i in range(idx.size):
+            A = seq_sets[int(idx[a_i])]
+            for b_i in range(a_i + 1, idx.size):
+                B = seq_sets[int(idx[b_i])]
+                inter = len(A & B)
+                if metric == "jaccard":
+                    uni = len(A | B)
+                    v = 1.0 if uni == 0 else inter / uni
+                elif metric == "overlap_min":
+                    denom = min(len(A), len(B))
+                    v = 0.0 if denom == 0 else inter / denom
+                else:
+                    raise ValueError("metric must be 'jaccard' or 'overlap_min'")
+                vals.append(v)
+
+        vals = np.asarray(vals, dtype=float)
+        within_mean.append(np.nanmean(vals))
+        within_var.append(np.nanvar(vals))
+
+    retval["clust_scores"]["within_mem"] = np.asarray(within_mean, dtype=float)
+    retval["clust_scores"]["within_mem_var"] = np.asarray(within_var, dtype=float)
 
 
 # =============================================================================
@@ -379,6 +461,7 @@ def merge_clusters(mat_dict, result_dict, data, thr, verbose=True):
     result_dict_merged = info_cluster(data["bursts"], data["seqs"], ids_clust_relab, data["seq_method"])
     add_within_clust_score(result_dict_merged, mat_dict)
     add_within_across_score(result_dict_merged, data["bursts"], data["seqs"], permutation=False)
+    add_within_clust_membership_score(result_dict_merged, data["seqs"], metric="jaccard")
     result_dict_merged["merged_clusters_origidx"] = merged_clusters
 
     # should be True: each matrix row corresponds to one label

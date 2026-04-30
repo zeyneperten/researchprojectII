@@ -1,6 +1,6 @@
 import numpy as np
 
-def add_within_clust_score(seqs_labels, corrmat, bmat):
+def add_within_clust_score(seqs_labels, zmat, bmat):
     """
     Evaluate clusters by computing mean within-cluster score.
 
@@ -12,7 +12,7 @@ def add_within_clust_score(seqs_labels, corrmat, bmat):
     Parameters
     ----------
     seqs_labels : motif indeces
-    corrmat: correlation matrix returned by allmot
+    zmat: z-score matrix returned by allmot
     bmat: binary matrix of significant correlations
     
     Returns
@@ -25,9 +25,9 @@ def add_within_clust_score(seqs_labels, corrmat, bmat):
     within_score = []
     within_var = []
     
-    corrmat = np.nan_to_num(corrmat, nan=0)
+    zmat = np.nan_to_num(zmat, nan=0)
     # 0 where bmat_pm is 0, i.e. scores are not significant
-    corrmat[bmat == 0] = 0 #bmat_pm
+    zmat[bmat == 0] = 0 #bmat_pm
     
     for cl in np.unique(ids_clust):
         # indices of sequences belonging to this cluster
@@ -39,7 +39,7 @@ def add_within_clust_score(seqs_labels, corrmat, bmat):
             continue
         
         # extract submatrix for this cluster
-        submat = corrmat[np.ix_(idx, idx)]
+        submat = zmat[np.ix_(idx, idx)]
         # upper triangle indices (exclude diagonal)
         iu = np.triu_indices_from(submat, k=1)
         # compute mean z-score

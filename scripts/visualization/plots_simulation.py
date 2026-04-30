@@ -64,9 +64,11 @@ def plot_cluster_composition(
     include_noise=True,   # set False to drop y_pred == -1
     return_table=False,   # return a DataFrame with the composition
     figsize=(5, 3),
-    palette="hsv",      # palette for true labels
+    palette="tab20",      # palette for true labels
     n_colorbar_ticks=6,    # how many labels to show on the colorbar (approx.)
-    ratios=None
+    ratios=None,
+    ratios_label="Intra-cluster score",
+    thr=0.4
 ):
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
@@ -160,8 +162,9 @@ def plot_cluster_composition(
     if ratios_aligned is not None:
         ax2 = ax.twinx()
         ax2.plot(range(len(ratios_aligned)), ratios_aligned, color='k', marker='.', linestyle='-', linewidth=1)
-        ax2.set_ylabel('Ratio score',color='k')
+        ax2.set_ylabel(ratios_label, color='k')
         ax2.tick_params(axis='y', labelcolor='k')
+        ax2.hlines(thr, xmin=-0.5, xmax=len(pred_labels_sorted)-0.5, colors='k', linestyles='dashed', alpha=0.7)
 
     fig.tight_layout()
 

@@ -213,6 +213,39 @@ def plot_cluster_confusion(
     for lx, ly in zip(labels_x, labels_y):
         cm[y_map[ly], x_map[lx]] += 1
 
+    # normalization
+    if normalize == "x":
+        cm = cm / np.maximum(cm.sum(axis=0, keepdims=True), 1)
+    elif normalize == "y":
+        cm = cm / np.maximum(cm.sum(axis=1, keepdims=True), 1)
+
+    if cm.shape[0] > 1:
+        peak_col = np.argmax(cm, axis=1)              # where each y-row peaks on x
+        peak_val = np.max(cm, axis=1)                 # height of that peak
+        order = np.lexsort((-peak_val, peak_col))     # primary: peak_col, secondary: -peak_val
+    
+        cm = cm[order]
+        y_labels = y_labels[order]
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9,7))
+
+    im = ax.imshow(cm, aspect="auto", cmap=cmap)
+
+    ax.set_xticks(np.arange(len(x_labels)))
+    ax.set_yticks(np.arange(len(y_labels)))
+    ax.set_xticklabels(x_labels)
+    ax.set_yticklabels(y_labels)
+    ax.set_xticklabels(x_labels, rotation=90)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+    plt.colorbar(im, ax=ax, label="count" if normalize is None else "fraction")
+    plt.tight_layout()
+
+    return cm, x_labels, y_labels
+
 
 
 # =============================================================================

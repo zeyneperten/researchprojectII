@@ -4,10 +4,42 @@ from numba import njit, prange
 from scipy.special import expit
 from scipy.spatial.distance import squareform, pdist
 from scipy.sparse import csr_matrix
+#import editdistance
 
 # =============================================================================
 # Distance matrix computation
 # =============================================================================
+
+def seq_to_str(seq):
+    s = ""
+    for item in seq:
+        s += str(item)
+    return s
+
+def edit_distance(seq1, seq2):
+    "Compute the Levenshtein edit distance between two sequences."
+    dist_edit = editdistance.eval(seq_to_str(seq1), seq_to_str(seq2))
+    GLD = 2*dist_edit / (len(seq1) + len(seq2) + dist_edit)
+    return GLD
+
+def pairwise_edit_distance(seqs):
+    "Compute pairwise edit distance matrix for a list of sequences."
+    n = len(seqs)
+    dist_matrix = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(i + 1, n):
+            _, idx1, idx2 = np.intersect1d(seqs[i], seqs[j], return_indices=True, assume_unique=False)
+            k = idx1.size
+            
+            # Only compute distance for pairs with min overlap k, distance is 1 otherwise.
+            if k >= 5: # threshold for reliable correlation
+                dist = edit_distance(seqs[i], seqs[j]) # idx1, idx2 seqs[i], seqs[j]
+                dist_matrix[i, j] = dist
+                dist_matrix[j, i] = dist  # symmetric
+            else:
+                dist_matrix[i, j] = 1.0
+                dist_matrix[j, i] = 1.0
+    return squareform(dist_matrix)
 
 def invert_sigmoid_expit(z, k=1.0, x0=0.0):
     "Invert sigmoid function (expit) to map similarity values to dissimilarity."

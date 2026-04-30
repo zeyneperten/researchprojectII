@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 # Local imports
 from ..analysis import analysis as sa
 from ..clustering import distances as dist_helpers
+from ..clustering import evaluation_helpers as eval_helpers
 from ..visualization.style import PublicationStandard
 from . import core as sc
 
@@ -42,8 +43,69 @@ def shuffle_sequences(seqs, seed=None):
 # ==========================================
 # Survival analysis for sequence clustering
 # ==========================================
+def within_clust_shuffle(
+    data,
+    ids_clust,
+    n_shuffles=30
+    ):
+    """
+    Shuffle sequences multiple times and compute mean/std of the within-cluster score.
 
-def survival_scores(data, k, thr, seeds):
+    Parameters
+    ----------
+    data : dict
+        data dictionary containing the following keys: seqs, spike_times, method
+        Original sequences.
+    ids_clust : list or np.array
+        Cluster assignments / cluster ids passed to `sc.info_cluster`.
+    n_shuffles : int, default=30
+        Number of shuffles.
+    base_seed : int, default=0
+        Base seed; shuffle i uses seed = base_seed + i.
+
+    Returns
+    -------
+    out : dict
+        Dictionary with mean, std, and all shuffle results.
+    """
+    scores = []
+    ratio_scores = []
+    result_dicts = []
+
+    for i in range(n_shuffles):
+        seqs_sh = shuffle_sequences(data['seqs'], seed=i)
+        mat_dict_sh = sc.allmot(seqs_sh)
+
+        result_dict_sh = sc.info_cluster(
+            data['bursts'],
+            seqs_sh,
+            ids_clust,
+            method=data['seq_method']
+        )
+
+        sc.add_within_clust_score(result_dict_sh, mat_dict_sh)
+        result_dicts.append(result_dict_sh)
+
+        scores.append(result_dict_sh['clust_scores']['within_clust'])
+        ratio_scores.append(result_dict_sh['clust_scores']['within_clust_ratio'])
+
+    scores = np.asarray(scores, dtype=float)
+    ratio_scores = np.asarray(ratio_scores, dtype=float)
+
+    out = {
+        "mean": np.nanmean(scores, axis=0),
+        "std": np.nanstd(scores, axis=0, ddof=1),
+        "ratio_mean": np.nanmean(ratio_scores, axis=0),
+        "ratio_std": np.nanstd(ratio_scores, axis=0, ddof=1),
+        "scores": scores,
+        "ratio_scores": ratio_scores,
+        "result_dicts": result_dicts,
+        "n_shuffles": n_shuffles,
+    }
+
+    return out
+
+def survival_scores(data, k, thr_c, seeds):
     """
     Outputs (all per-sequence, length n_seqs):
       - survival_freq: fraction of seeds where seq i is in a surviving cluster
@@ -69,21 +131,66 @@ def survival_scores(data, k, thr, seeds):
     clust_size_sum = np.zeros(n_seqs, dtype=int)
     clust_size_n = np.zeros(n_seqs, dtype=int)
 
+    # per-seed per-sequence matrices
+    cluster_size_by_seed = np.zeros((S, n_seqs), dtype=np.int16)            
+    within_clust_by_seed = np.full((S, n_seqs), np.nan, dtype=np.float32)
+    within_order_by_seed = np.full((S, n_seqs), np.nan, dtype=np.float32)
+    within_mem_by_seed   = np.full((S, n_seqs), np.nan, dtype=np.float32) 
+
     # Sparse per-sequence co-cluster counts:
     # co_counts[i][j] = number of seeds where i and j are in the same *surviving* cluster.
     co_counts = [Counter() for _ in range(n_seqs)]
 
+    # mat_dict for cluster scores (not shuffled)
+    mat_dict = sc.allmot(seqs)
+
     # --- run pipeline for each seed, accumulate survival + co-cluster counts ---
-    for seed in seeds:
+    for s_idx, seed in enumerate(seeds):
         seqs_sh = shuffle_sequences(seqs, seed=seed)
         mat_dict_sh = sc.allmot(seqs_sh)
-        res_sh, _ = run_one(seqs_sh, data, mat_dict_sh, k, thr)
+        res_sh, rd_sh = run_one(seqs_sh, data, mat_dict_sh, k, thr_c)
+        #res_sh, rd_sh = run_one_edit(seqs_sh, data, mat_dict_sh, k, thr_c)
         ids = np.asarray(res_sh["ids_clust_replaced"], dtype=int)
+        ids_pre = np.asarray(rd_sh["ids_clust"], dtype=int)
         labels_by_seed.append(ids)
 
         surv = (ids != -1)
         survival_hits += surv.astype(np.int32)
 
+        # map cluster_label -> (within_clust, within_mem) from rd_sh (merged, pre-filter)
+        labels_u = np.unique(rd_sh["ids_clust"])
+        # get within score evaluated on true sequences (order)
+        rd_sh_order = sc.info_cluster(data["bursts"], seqs_sh, rd_sh["ids_clust"], method='center_of_mass')
+        sc.add_within_clust_score(rd_sh_order, mat_dict)                           
+        within_clust_arr = np.asarray(rd_sh["clust_scores"]["within_clust"], float)
+        within_order_arr = np.asarray(rd_sh_order["clust_scores"]["within_clust"], float)
+        within_mem_arr   = np.asarray(rd_sh["clust_scores"]["within_mem"], float)  
+        
+        within_clust_map = {int(lbl): float(w) for lbl, w in zip(labels_u, within_clust_arr)} 
+        within_order_map = {int(lbl): float(w) for lbl, w in zip(labels_u, within_order_arr)}
+        within_mem_map   = {int(lbl): float(w) for lbl, w in zip(labels_u, within_mem_arr)}
+
+        # reset per-seed per-seq outputs
+        cluster_size_by_seed[s_idx, :] = 0 
+        within_clust_by_seed[s_idx, :] = np.nan 
+        within_mem_by_seed[s_idx, :] = np.nan 
+
+        # group members by cluster label for pre-filtered clusters
+        groups_pre = defaultdict(list)
+        for i, c in enumerate(ids_pre):
+            groups_pre[int(c)].append(i)
+
+        # update cluster-size stats and pairwise co-cluster counts
+        for cl, members in groups_pre.items():
+            members = np.asarray(members, dtype=int)
+            m = int(members.size)
+
+            # store per-seq cluster size + cluster-level scores
+            cluster_size_by_seed[s_idx, members] = m
+            within_clust_by_seed[s_idx, members] = within_clust_map.get(int(cl), np.nan)
+            within_order_by_seed[s_idx, members] = within_order_map.get(int(cl), np.nan)
+            within_mem_by_seed[s_idx, members]   = within_mem_map.get(int(cl), np.nan)
+        
         # group members by cluster label (excluding replace_with=-1)
         groups = defaultdict(list)
         for i, c in enumerate(ids):
@@ -91,16 +198,16 @@ def survival_scores(data, k, thr, seeds):
                 groups[int(c)].append(i)
 
         # update cluster-size stats and pairwise co-cluster counts
-        for members in groups.values():
-            m = len(members)
+        for cl, members in groups.items():
+            members = np.asarray(members, dtype=int)
+            m = int(members.size)
+            
             if m <= 1:
                 # singleton surviving clusters contribute size info but no pairs
-                for i in members:
-                    clust_size_sum[i] += 1
-                    clust_size_n[i] += 1
+                for ii in members:
+                    clust_size_sum[ii] += 1
+                    clust_size_n[ii] += 1
                 continue
-
-            members = np.asarray(members, dtype=int)
 
             # size stats (for average surviving cluster size)
             clust_size_sum[members] += m
@@ -108,13 +215,14 @@ def survival_scores(data, k, thr, seeds):
 
             # co-cluster counts [i,j] how many times did i co-cluster with j
             # For each i in cluster, add all other members as neighbors.
-            for idx_i, i in enumerate(members):
+            for ii in members:
                 # update counter with all members
-                co_counts[i].update(members.tolist())
-                co_counts[i][int(i)] -= 1  # remove self i=j
+                co_counts[ii].update(members.tolist())
+                co_counts[ii][ii] -= 1  # remove self i=j
 
     # --- Survival fraction
     survival_freq = (survival_hits / S).astype(float)
+
     # mean cluster size when surviving
     mean_cluster_size = np.zeros(n_seqs, dtype=float)
     mask_cs = clust_size_n > 0
@@ -137,12 +245,16 @@ def survival_scores(data, k, thr, seeds):
         "pairwise_jaccard_non_survival_empty": pj["pairwise_jaccard_non_survival_empty"],
         "n_pairs_used_non_survival_empty": pj["n_pairs_used_non_survival_empty"],
         "mean_cluster_size": mean_cluster_size,
-        "labels_by_seed": [np.asarray(x, dtype=int).copy() for x in labels_by_seed]
+        "labels_by_seed": [np.asarray(x, dtype=int).copy() for x in labels_by_seed],
+        "cluster_size_by_seed": cluster_size_by_seed,
+        "within_clust_by_seed": within_clust_by_seed,
+        "within_order_by_seed": within_order_by_seed,
+        "within_mem_by_seed": within_mem_by_seed,
     }
     return out
 
 
-def run_one(seqs, data, mat_dict, k, thr, memmap_dir=None):
+def run_one(seqs, data, mat_dict, k, thr_c, memmap_dir=None):
     """
     Run one clustering pipeline.
     
@@ -156,8 +268,8 @@ def run_one(seqs, data, mat_dict, k, thr, memmap_dir=None):
         Output from allmot(...).
     k : int
         Number of clusters.
-    thr : float
-        Threshold for merging/filtering.
+    thr_c : float
+        Threshold for filtering.
     memmap_dir : str or Path, optional
         Directory for memmap file. If None, uses temporary directory (auto-cleaned).
         This allows flexibility: use temp dir for one-off analysis, or persistent
@@ -191,14 +303,15 @@ def run_one(seqs, data, mat_dict, k, thr, memmap_dir=None):
 
     rd = sc.info_cluster(data["bursts"], seqs, ids_clust, method="center_of_mass")
     sc.add_within_clust_score(rd, mat_dict)
-    rd_merged, _, _, _ = sc.merge_clusters(mat_dict, rd, data, thr=thr, verbose=False)
+    thr_m = eval_helpers.get_merging_threshold(rd, mat_dict, seed=0)
+    rd_merged, _, _, _ = sc.merge_clusters(mat_dict, rd, data, thr=thr_m, verbose=False)
 
     res = sa.sort_and_filter_labels(
         ids_clust=rd_merged["ids_clust"],
         clust_scores=rd_merged["clust_scores"],
         sort_by="within_clust",
         ascending=True,
-        min_score={"within_clust": thr},
+        min_score={"within_clust": thr_c},
         min_size=1,
         replace_with=-1,
     )
@@ -206,6 +319,197 @@ def run_one(seqs, data, mat_dict, k, thr, memmap_dir=None):
     # Clean up temp dir if created
     if memmap_dir is None:
         temp_dir.cleanup()
+    
+    return res, rd_merged
+
+#############################################################################################################################################################################################
+def survival_scores_edit(data, k, thr_c, seeds):
+    """
+    Outputs (all per-sequence, length n_seqs):
+      - survival_freq: fraction of seeds where seq i is in a surviving cluster
+      - mean_cluster_size: average size of i's surviving cluster (including i) over seeds where i survives
+
+    Optionally:
+      - pair_probs: list of Counter objects mapping neighbor j -> p_ij
+          (sparse per-i map; can be large)
+
+    Notes:
+      - Pairwise "co-cluster probability" p_ij is computed over ALL seeds, as:
+            p_ij = (# seeds where i and j co-cluster in surviving clusters) / (# seeds total)
+        so it naturally downweights pairs that only occur when i survives rarely.
+    """
+    seqs = data["seqs"]
+    n_seqs = len(seqs)
+    seeds = list(seeds)
+    S = len(seeds)
+
+    # Cache labels for each seed
+    labels_by_seed = []
+    survival_hits = np.zeros(n_seqs, dtype=int)
+    clust_size_sum = np.zeros(n_seqs, dtype=int)
+    clust_size_n = np.zeros(n_seqs, dtype=int)
+
+    # per-seed per-sequence matrices
+    cluster_size_by_seed = np.zeros((S, n_seqs), dtype=np.int16)            
+    within_clust_by_seed = np.full((S, n_seqs), np.nan, dtype=np.float32)
+    within_order_by_seed = np.full((S, n_seqs), np.nan, dtype=np.float32)
+    within_mem_by_seed   = np.full((S, n_seqs), np.nan, dtype=np.float32) 
+
+    # Sparse per-sequence co-cluster counts:
+    # co_counts[i][j] = number of seeds where i and j are in the same *surviving* cluster.
+    co_counts = [Counter() for _ in range(n_seqs)]
+
+    # mat_dict for cluster scores (not shuffled)
+    mat_dict = sc.allmot(seqs)
+
+    # --- run pipeline for each seed, accumulate survival + co-cluster counts ---
+    for s_idx, seed in enumerate(seeds):
+        seqs_sh = shuffle_sequences(seqs, seed=seed)
+        mat_dict_sh = sc.allmot(seqs_sh)
+        res_sh, rd_sh = run_one_edit(seqs_sh, data, mat_dict_sh, k, thr_c)
+        ids = np.asarray(res_sh["ids_clust_replaced"], dtype=int)
+        ids_pre = np.asarray(rd_sh["ids_clust"], dtype=int)
+        labels_by_seed.append(ids)
+
+        surv = (ids != -1)
+        survival_hits += surv.astype(np.int32)
+
+        # map cluster_label -> (within_clust, within_mem) from rd_sh (merged, pre-filter)
+        labels_u = np.unique(rd_sh["ids_clust"])
+        # get within score evaluated on true sequences (order)
+        rd_sh_order = sc.info_cluster(data["bursts"], seqs_sh, rd_sh["ids_clust"], method='center_of_mass')
+        sc.add_within_clust_score(rd_sh_order, mat_dict)                           
+        within_clust_arr = np.asarray(rd_sh["clust_scores"]["within_clust"], float)
+        within_order_arr = np.asarray(rd_sh_order["clust_scores"]["within_clust"], float)
+        within_mem_arr   = np.asarray(rd_sh["clust_scores"]["within_mem"], float)  
+        
+        within_clust_map = {int(lbl): float(w) for lbl, w in zip(labels_u, within_clust_arr)} 
+        within_order_map = {int(lbl): float(w) for lbl, w in zip(labels_u, within_order_arr)}
+        within_mem_map   = {int(lbl): float(w) for lbl, w in zip(labels_u, within_mem_arr)}
+
+        # reset per-seed per-seq outputs
+        cluster_size_by_seed[s_idx, :] = 0 
+        within_clust_by_seed[s_idx, :] = np.nan 
+        within_mem_by_seed[s_idx, :] = np.nan 
+
+        # group members by cluster label for pre-filtered clusters
+        groups_pre = defaultdict(list)
+        for i, c in enumerate(ids_pre):
+            groups_pre[int(c)].append(i)
+
+        # update cluster-size stats and pairwise co-cluster counts
+        for cl, members in groups_pre.items():
+            members = np.asarray(members, dtype=int)
+            m = int(members.size)
+
+            # store per-seq cluster size + cluster-level scores
+            cluster_size_by_seed[s_idx, members] = m
+            within_clust_by_seed[s_idx, members] = within_clust_map.get(int(cl), np.nan)
+            within_order_by_seed[s_idx, members] = within_order_map.get(int(cl), np.nan)
+            within_mem_by_seed[s_idx, members]   = within_mem_map.get(int(cl), np.nan)
+        
+        # group members by cluster label (excluding replace_with=-1)
+        groups = defaultdict(list)
+        for i, c in enumerate(ids):
+            if c != -1:
+                groups[int(c)].append(i)
+
+        # update cluster-size stats and pairwise co-cluster counts
+        for cl, members in groups.items():
+            members = np.asarray(members, dtype=int)
+            m = int(members.size)
+            
+            if m <= 1:
+                # singleton surviving clusters contribute size info but no pairs
+                for ii in members:
+                    clust_size_sum[ii] += 1
+                    clust_size_n[ii] += 1
+                continue
+
+            # size stats (for average surviving cluster size)
+            clust_size_sum[members] += m
+            clust_size_n[members] += 1
+
+            # co-cluster counts [i,j] how many times did i co-cluster with j
+            # For each i in cluster, add all other members as neighbors.
+            for ii in members:
+                # update counter with all members
+                co_counts[ii].update(members.tolist())
+                co_counts[ii][ii] -= 1  # remove self i=j
+
+    # --- Survival fraction
+    survival_freq = (survival_hits / S).astype(float)
+
+    # mean cluster size when surviving
+    mean_cluster_size = np.zeros(n_seqs, dtype=float)
+    mask_cs = clust_size_n > 0
+    mean_cluster_size[mask_cs] = (clust_size_sum[mask_cs] / clust_size_n[mask_cs]).astype(float)
+
+    # --- Pair probabilities
+    pair_probs = []
+    for i in range(n_seqs):
+        # sparse mapping j -> p_ij
+        pair_probs.append(Counter({j: cnt / S for j, cnt in co_counts[i].items() if j != i}))
+
+    # --- Pairwise Jaccard neighbor stability 
+    pj = pairwise_neighbor_jaccard(labels_by_seed, replace_with=-1)
+
+    out = {
+        "survival_freq": survival_freq,  # fraction in surviving cluster
+        "pair_probs": pair_probs,
+        "pairwise_jaccard_cond_survival": pj["pairwise_jaccard_cond_survival"],
+        "n_pairs_used_cond_survival": pj["n_pairs_used_cond_survival"],
+        "pairwise_jaccard_non_survival_empty": pj["pairwise_jaccard_non_survival_empty"],
+        "n_pairs_used_non_survival_empty": pj["n_pairs_used_non_survival_empty"],
+        "mean_cluster_size": mean_cluster_size,
+        "labels_by_seed": [np.asarray(x, dtype=int).copy() for x in labels_by_seed],
+        "cluster_size_by_seed": cluster_size_by_seed,
+        "within_clust_by_seed": within_clust_by_seed,
+        "within_order_by_seed": within_order_by_seed,
+        "within_mem_by_seed": within_mem_by_seed,
+    }
+    return out
+###########################################################################################################################################################################################
+
+def run_one_edit(seqs, data, mat_dict, k, thr):
+    """
+    Run one clustering pipeline.
+    
+    Parameters
+    ----------
+    seqs : list
+        Sequences to cluster.
+    data : dict
+        Data dictionary with 'bursts' and 'seqs' keys.
+    mat_dict : dict
+        Output from allmot(...).
+    k : int
+        Number of clusters.
+    thr : float
+        Threshold for filtering.
+    
+    Returns
+    -------
+    res, rd_merged : tuple
+        Clustering results and merged result dict.
+    """
+    pdist = dist_helpers.pairwise_edit_distance(seqs)
+    ids_clust = sc.seq_cluster(pdist, k=k, method="ward")
+
+    rd = sc.info_cluster(data["bursts"], seqs, ids_clust, method="center_of_mass")
+    sc.add_within_clust_score(rd, mat_dict)
+    thr_m = eval_helpers.get_merging_threshold(rd, mat_dict)
+    rd_merged, _, _, _ = sc.merge_clusters(mat_dict, rd, data, thr=thr_m, verbose=False)
+
+    res = sa.sort_and_filter_labels(
+        ids_clust=rd_merged["ids_clust"],
+        clust_scores=rd_merged["clust_scores"],
+        sort_by="within_clust",
+        ascending=True,
+        min_score={"within_clust": thr, "within_clust_ratio": 7},
+        min_size=1,
+        replace_with=-1,
+    )
     
     return res, rd_merged
 

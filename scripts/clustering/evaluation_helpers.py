@@ -6,7 +6,7 @@ from scipy.stats import norm
 from sklearn.metrics import silhouette_score
 
 # Local imports
-from .rank_correlation import rankseq, choose_nrm_param
+from .rank_correlation import rankseq_fast, choose_nrm_param
 
 # =============================================================================
 # Cluster evaluation
@@ -464,7 +464,7 @@ def check_template(seqs, temp):
     Evaluate a template against a set of sequences using rank correlation and compute z-scores.
 
     For each sequence in `seqs`, this function calculates the Spearman rank order correlation 
-    with the template `temp` (using the previously defined `rankseq` function). Based on the 
+    with the template `temp` (using the `rankseq_fast` function). Based on the 
     overlap length between the template and each sequence, appropriate normalization parameters 
         are selected from the cached `nrm` table. A z-score is then computed, and a binary
         significance flag is set if the z-score exceeds a threshold.
@@ -496,7 +496,7 @@ def check_template(seqs, temp):
         
     for ns in range(nseqs):
         s2 = seqs[ns]
-        rc, ln = rankseq(s1, s2)  # Compute rank correlation and overlap length
+        rc, ln = rankseq_fast(s1, s2)  # Compute rank correlation and overlap length
         
         # Choose normalization parameters based on the overlap length.
         mns = choose_nrm_param(ln)
@@ -695,7 +695,7 @@ def get_mean_cluster_score(
 ):
     zmat_0 = mat_dict[mat].copy()
     # only consider significant zscores
-    zmat_0[mat_dict["bmat"] == 0] = 0  # optional bmat_pm
+    zmat_0[mat_dict["bmat"] == 0] = 0  # bmat - only postive evaluated bmat_pm - all significant scores, including negative ones
     zmat_0 = np.nan_to_num(zmat_0, nan=0)
 
     if ids_clust_merged is None:
@@ -738,3 +738,28 @@ def get_mean_cluster_score(
 
     return (block_means, unique_clusters) if return_labels else block_means
 
+
+def get_merging_threshold(rd, mat_dict, verbose=True, seed=None, n_perm=100):
+    # sample random seed
+    seed = np.random.randint(0, 1000000)
+    rng = np.random.default_rng(seed)
+    null_scores = []
+
+    for _ in range(n_perm):
+        ids_perm = rng.permutation(rd["ids_clust"])
+        bm_null = get_mean_cluster_score(mat_dict, rd, ids_perm)
+        iu = np.triu_indices_from(bm_null, k=1)
+        null_scores.extend(bm_null[iu])
+
+    null_scores = np.asarray(null_scores)
+
+    # --- threshold from null ---
+    qt = np.nanquantile(null_scores, 0.99)
+    thr_opt = qt * 3  # merge if observed between-cluster mean is more than 3x the null threshold
+    thr_opt = max(thr_opt, 0.1)  # minimum threshold to avoid merging everything
+    thr_opt = np.ceil(thr_opt * 100) / 100.0  # round up to 3 decimals
+
+    if verbose:
+        print(f"Merging threshold (3x 99th percentile of null): {thr_opt} (seed={seed})")
+
+    return thr_opt

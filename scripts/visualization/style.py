@@ -22,6 +22,7 @@ def set_plot_style():
         'font.family': 'serif',
         'font.serif': ['DejaVu Serif'], #CMU Serif Computer Modern
         'font.sans-serif': ['DejaVu Sans'], #CMU Sans Serif
+        "mathtext.fontset": "dejavuserif",
         'font.size': 12,
         'text.usetex': False,       # keep off unless you’ve verified TeX toolchain
 

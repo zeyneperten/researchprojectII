@@ -135,87 +135,195 @@ def plot_cluster_scores(
 
 def plot_cluster_scores_comparison(
     rd_real,
-    rd_shuf,
+    out_shuf,
     kept,
     score_key="within_clust",
     descending=True,
-    figsize=(12, 3.5),
-    bar_width=0.72,          # wider since we overlap
-    alpha_real=0.55,
-    alpha_shuf=0.55,
+    figsize=(5, 3),
+    bar_width=0.5,
     show_zero_line=True,
-    check_label="shuffled"
+    shuf_label="shuffled mean ± std",
+    real_label="real",
 ):
     """
-    Overlapped barplot (real vs shuffled) for clusters in `kept` (from real filtering).
+    Plot real cluster scores as bars, with shuffled mean ± std overlaid
+    as a red dot + vertical error bar on the same x position.
 
-    Assumptions:
-      - rd_*["ids_clust"] is per-sequence labels (used only to define cluster set/order)
-      - rd_*["clust_scores"][score_key] is one score per cluster, ordered like:
-            np.unique(rd_*["ids_clust"])
-      - `kept` is iterable of cluster labels to include (real case).
+    Assumptions
+    -----------
+    rd_real["clust_scores"][score_key]:
+        one score per cluster, ordered like np.unique(rd_real["ids_clust"])
+
+    out_shuf["mean"], out_shuf["std"]:
+        one shuffled mean/std per cluster, ordered like np.unique(rd_real["ids_clust"])
+        out_shuf output from within_clust_shuffle in shuffling.py
     """
     kept = np.asarray(list(kept), dtype=int)
 
-    # --- cluster universe (from real labels) ---
-    ids_real = np.asarray(rd_real["ids_clust"])
-    clusters_all = np.unique(ids_real)
+    # cluster labels from real result
+    uniq_real = np.unique(np.asarray(rd_real["ids_clust"]))
+    kept_set = set(kept.tolist())
+    clusters = np.array([c for c in uniq_real if int(c) in kept_set], dtype=int)
 
-    kept_set = set(int(x) for x in kept.tolist())
-    clusters = np.array([c for c in clusters_all if int(c) in kept_set], dtype=int)
+    # --- real scores ---
+    score_real_all = np.asarray(rd_real["clust_scores"][score_key], dtype=float)
+    if len(score_real_all) != len(uniq_real):
+        raise ValueError(
+            f"rd_real['clust_scores']['{score_key}'] must have one value per cluster "
+            f"(expected {len(uniq_real)}, got {len(score_real_all)})."
+        )
 
-    # --- helper: label -> score (one per cluster) ---
-    def label_to_score_array(rd, clusters):
-        uniq = np.unique(np.asarray(rd["ids_clust"]))
-        scores = np.asarray(rd["clust_scores"][score_key], float)
+    real_map = {int(c): float(s) for c, s in zip(uniq_real, score_real_all)}
+    score_real = np.array([real_map[int(c)] for c in clusters], dtype=float)
 
-        if scores.shape[0] != uniq.shape[0]:
-            raise ValueError(
-                f"Score length mismatch for '{score_key}': "
-                f"len(scores)={len(scores)} but len(unique_clusters)={len(uniq)}. "
-                "Ensure clust_scores[score_key] is one value per cluster and corresponds "
-                "to np.unique(ids_clust)."
-            )
+    # --- shuffled mean/std ---
+    shuf_mean_all = np.asarray(out_shuf["mean"], dtype=float)
+    shuf_std_all = np.asarray(out_shuf["std"], dtype=float)
 
-        m = {int(c): float(s) for c, s in zip(uniq, scores)}
-        return np.array([m.get(int(c), np.nan) for c in clusters], float)
+    if len(shuf_mean_all) != len(uniq_real) or len(shuf_std_all) != len(uniq_real):
+        raise ValueError(
+            "out_shuf['mean'] and out_shuf['std'] must each contain one value per cluster, "
+            f"ordered like np.unique(rd_real['ids_clust']) = {len(uniq_real)} clusters.\n"
+            f"Got len(mean)={len(shuf_mean_all)}, len(std)={len(shuf_std_all)}."
+        )
 
-    score_real = label_to_score_array(rd_real, clusters)
-    score_shuf = label_to_score_array(rd_shuf, clusters)
+    shuf_mean_map = {int(c): float(m) for c, m in zip(uniq_real, shuf_mean_all)}
+    shuf_std_map = {int(c): float(s) for c, s in zip(uniq_real, shuf_std_all)}
 
-    # --- ordering (descending by real) ---
+    score_shuf_mean = np.array([shuf_mean_map[int(c)] for c in clusters], dtype=float)
+    score_shuf_std = np.array([shuf_std_map[int(c)] for c in clusters], dtype=float)
+
+    # --- sort by real score ---
     order = np.argsort(score_real)
     if descending:
         order = order[::-1]
-    clusters   = clusters[order]
-    score_real = score_real[order]
-    score_shuf = score_shuf[order]
 
-    # --- plot (overlapped bars) ---
+    clusters = clusters[order]
+    score_real = score_real[order]
+    score_shuf_mean = score_shuf_mean[order]
+    score_shuf_std = score_shuf_std[order]
+
+    # --- plot ---
     x = np.arange(len(clusters))
+
     fig, ax = plt.subplots(figsize=figsize)
 
-    # draw the larger bars first so the smaller one remains visible
-    # (keeps overlap readable when values differ a lot)
-    draw_real_first = np.nan_to_num(np.abs(score_real), nan=-np.inf) >= np.nan_to_num(np.abs(score_shuf), nan=-np.inf)
+    # real bars
+    ax.bar(
+        x,
+        score_real,
+        width=bar_width,
+        color="tab:blue",
+        alpha=0.8,
+        edgecolor="none",
+        label=real_label,
+        zorder=1,
+    )
 
-    # base: draw all real then all shuf (simple and consistent)
-    ax.bar(x, score_real, width=bar_width, color="tab:blue", alpha=alpha_real, label="Cluster scores", edgecolor="none")
-    ax.bar(x, score_shuf, width=bar_width, color="tab:red",  alpha=alpha_shuf, label=check_label, edgecolor="none")
+    # shuffled mean ± std overlaid on bar center
+    ax.errorbar(
+        x,
+        score_shuf_mean,
+        yerr=score_shuf_std,
+        fmt="o",
+        color="tab:red",
+        capsize=3,
+        elinewidth=1.5,
+        markersize=5,
+        label=shuf_label,
+        zorder=3,
+    )
 
     if show_zero_line:
-        ax.axhline(0, linewidth=1, color="0.2", alpha=0.6)
+        ax.axhline(0, color="0.2", lw=1, alpha=0.6, zorder=0)
 
-    # cosmetics
-    ax.set_xlabel("Kept clusters (ordered by real score)")
-    ax.set_ylabel(score_key)
-    ax.legend(frameon=False, ncol=2, loc="best")
-
+    ax.set_xlabel("Cluster ID")
+    ax.set_ylabel("Intra-cluster score")
     ax.set_xticks(x)
     ax.set_xticklabels([str(int(c)) for c in clusters], rotation=90)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False)
+
+    plt.tight_layout()
+    return fig, ax
+
+
+def plot_survival_scores(
+    scores,
+    color_data,
+    c_label,
+    x_thresh=None,
+    y_thresh=None,
+    x_key="survival_freq",
+    y_key="pairwise_jaccard_cond_survival",
+    x_label="survival frequency",
+    y_label="pairwise Jaccard",
+    cmap="viridis",
+    figsize=(3,2.5),
+    s=8,
+    alpha=0.6,
+):
+    """
+    Scatter plot from a score dictionary.
+
+    Parameters
+    ----------
+    scores : dict
+        Dictionary containing arrays for x, y, and color values.
+    color_data : array-like
+        Data for point colors, e.g., mean cluster size or sequence labels.
+    c_label : str
+        Color bar label.
+    x_key, y_key, color_key : str
+        Keys in `scores` used for x-axis, y-axis, and point color.
+    x_label, y_label : str
+        Axis labels.
+    x_thresh, y_thresh, y_thresh_light : float or None
+        Optional reference lines.
+    cmap : str
+        Matplotlib colormap.
+    figsize : tuple
+        Figure size.
+    s : float
+        Marker size.
+    alpha : float
+        Marker transparency.
+
+    Returns
+    -------
+    fig, ax
+        Matplotlib figure and axes.
+    """
+    x = np.asarray(scores[x_key], dtype=float)
+    y = np.asarray(scores[y_key], dtype=float)
+    c = np.asarray(color_data, dtype=float)
+
+    m = np.isfinite(x) & np.isfinite(y) & np.isfinite(c)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    scat = ax.scatter(
+        x[m],
+        y[m],
+        c=c[m],
+        s=s,
+        alpha=alpha,
+        cmap=cmap,
+    )
+
+    if x_thresh is not None:
+        ax.axvline(x_thresh, color="k", linestyle="--", lw=1)
+    if y_thresh is not None:
+        ax.axhline(y_thresh, color="k", linestyle="--", lw=1)
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    cbar = fig.colorbar(scat, ax=ax, location="right", fraction=0.2, pad=0.02, shrink=0.8)
+    cbar.set_label(c_label)
 
     plt.tight_layout()
     return fig, ax

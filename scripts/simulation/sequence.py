@@ -60,9 +60,11 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
         densities, cdfs, t = build_pdfs_and_cdfs_vectorized(n_neurons, n_motifs, n_bins,
                          mu, sigma, volume, plot)
     # Sample spike times and generate sequences
+
+    
     if batch_size is not None and n_neurons > batch_size:
         sequences, spike_times = generate_sequences_batched(n_neurons, n_motifs, n_sequences, 
-                                                             mu, sigma, volume, t, batch_size, rng=rng_samples, shuffle_order=shuffle_order)
+                                                                mu, sigma, volume, t, batch_size, rng=rng_samples, shuffle_order=shuffle_order)
     else:
         sequences, spike_times = generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, rng=rng_samples, shuffle_order=shuffle_order)
 
@@ -71,7 +73,7 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
 
     # Get the true templates for each cluster based on the mu values
     true_templates = get_true_template(seqs, seqs_labels, mu)
-
+    
     if savepath:
         save_simulation(seqs, seqs_labels, spk_times, sequences, spike_times, true_templates, 
                      mu, sigma, volume, densities, cdfs,
@@ -81,7 +83,6 @@ def simulate_sequences(n_neurons, n_motifs, n_bins, n_sequences,
                      shuffle_order, random_state, savepath)
 
     return seqs, seqs_labels, spk_times, sequences, true_templates, mu, sigma, volume, densities, cdfs
-
 
 def save_simulation(seqs, seqs_labels, spk_times, sequences, spike_times, true_templates,
                     mu, sigma, volume, densities, cdfs, 
@@ -522,6 +523,69 @@ def generate_sequences_batched(n_neurons, n_motifs, n_sequences, mu, sigma, volu
     return sequences, spike_times_all
 
 
+# =============================================================================
+# Subseqeunces 
+# =============================================================================
+
+# With generate_sequences, we get ordered sequences of neuron indices for each cluster.
+# Implement such a function so that while generating sequences, we get subsequences of neurons that fire together i.e share mu. 
+# In original sequences they might not be together because of the noise (sigma) but they share the same mu, so they fire around the same time.
+# Choose the neurons to be fired simultaneously randomly. A 25 ms time window is a reasonable choice for "together" (based on typical neural firing patterns).
+# Since we have 100 time bins between 0 and 1, each time bin corresponds to 10 ms. So we can consider neurons that fire within 3 time bins (30 ms) as firing together.
+# Only keep subsequences that have at least 2 neurons, and filter out the rest. This way we can analyze the subsequences of neurons that tend to fire together, which might be more robust to noise and more reflective of the underlying motifs.
+# In generate_sequences, choose random neurons to fire in a way that they will have similar spike timing (30 ms window) but are not in the same sequence, and add them to a subsequence list.
+
+def sub_generate_sequences(n_neurons, n_motifs, n_sequences, cdfs, t, subsequences=False, rng=None, shuffle_order=False):
+    """
+    Generate sequences of neuronal activity based on the given parameters.
+
+    Returns
+    -------
+    sequences : dict
+        For each cluster, a list of sequences (list of neuron indices in firing order).
+    spike_times_all : dict
+        For each cluster, a list of sequences, where each sequence is a list of length n_neurons,
+        and each element is an array of spike times (empty if neuron did not fire).
+    """
+    # Initialize a dictionary to hold sequences for each cluster
+    rng = np.random.default_rng() if rng is None else rng
+    sequences = {}
+    spike_times_all = {}
+    subs = {}
+    
+    for k in range(n_motifs):
+        seqs = [] 
+        seqs_spiketimes = []
+        for _ in range(n_sequences):
+        
+            # threshold each neuron via CDF, collect candidates
+            spike_times = np.full(n_neurons, np.inf)
+            spike_times_list = [np.array([], dtype=float) for _ in range(n_neurons)]
+            for i in range(n_neurons):
+                u = rng.random()
+                if u <= cdfs[i, k, -1]:
+                    idx = np.searchsorted(cdfs[i, k], u)
+                    st = t[idx]
+                    spike_times[i] = st
+                    spike_times_list[i] = np.array([
+                        
+                        
+                        st])
+                    
+            # get order of neurons
+            fired = np.where(np.isfinite(spike_times))[0]
+            order = list(fired[np.argsort(spike_times[fired])])
+            if shuffle_order and len(order) > 1:
+                rng.shuffle(order)
+                
+            seq = [int(s) for s in order]
+            seqs.append(seq)
+            seqs_spiketimes.append(spike_times_list)
+    
+        sequences[k] = seqs
+        spike_times_all[k] = seqs_spiketimes
+
+    return sequences, spike_times_all, subs
 
 
 
