@@ -68,7 +68,7 @@ def plot_cluster_composition(
     n_colorbar_ticks=6,    # how many labels to show on the colorbar (approx.)
     ratios=None,
     ratios_label="Intra-cluster score",
-    thr=0.4,
+    thr=7,
     title=None,
     axnum=None
 ):
